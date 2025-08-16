@@ -1,5 +1,4 @@
 // --- BAGIAN KODE WEB SERVER EXPRESS ---
-// Untuk menjaga server tetap aktif dan menampilkan status
 const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
@@ -32,8 +31,6 @@ const roomAvailability = {
     nonAC: 0,
     AC: 0
 };
-let savedContacts = new Set();
-let isContactsReady = false; // Flag untuk menandai kontak sudah dimuat
 
 // --- FUNGSI UTAMA BOT ---
 async function connectToWhatsApp() {
@@ -49,7 +46,6 @@ async function connectToWhatsApp() {
         logger: pino({ level: 'silent' }),
     });
 
-    // Listener untuk koneksi, QR code, dan auto-reconnect
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
@@ -57,56 +53,22 @@ async function connectToWhatsApp() {
             qrcode.generate(qr, { small: true });
         }
         if (connection === 'close') {
-            isContactsReady = false; // Reset flag saat koneksi putus
-            const lastDisconnectError = lastDisconnect.error;
-            const shouldReconnect = (lastDisconnectError instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-
+            const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Koneksi terputus:', lastDisconnect.error, '| Mencoba menghubungkan kembali:', shouldReconnect);
-
             if (shouldReconnect) {
-                console.log("Melakukan restart koneksi...");
                 connectToWhatsApp();
             }
-
         } else if (connection === 'open') {
             console.log('Bot WhatsApp berhasil terhubung!');
-
-            // Timeout untuk memaksa status kontak menjadi siap jika tidak ada event
-            setTimeout(() => {
-                if (!isContactsReady) {
-                    console.log("Batas waktu tercapai, menganggap kontak sudah siap untuk melanjutkan...");
-                    isContactsReady = true;
-                }
-            }, 20000); // 20 detik
         }
     });
 
-    // Listener untuk menyimpan sesi
     sock.ev.on('creds.update', saveCreds);
-
-    // Listener untuk memuat daftar kontak
-    sock.ev.on('contacts.set', ({ contacts }) => {
-        console.log('Memuat daftar kontak dari WhatsApp...');
-        savedContacts.clear(); 
-        contacts.forEach(contact => {
-            if (contact.id && !contact.id.endsWith('@g.us')) {
-                savedContacts.add(contact.id);
-            }
-        });
-        console.log(`Berhasil memuat ${savedContacts.size} kontak.`);
-        isContactsReady = true; // Set flag menjadi true setelah kontak dimuat
-    });
 
     // Listener untuk pesan masuk
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) {
-            return;
-        }
-
-        // Bot akan mengabaikan semua pesan jika kontak belum siap dimuat
-        if (!isContactsReady) {
-            console.log("Menunggu daftar kontak selesai dimuat, pesan diabaikan untuk sementara...");
             return;
         }
 
@@ -116,14 +78,20 @@ async function connectToWhatsApp() {
         console.log('\n--- PESAN MASUK ---');
         console.log('Pengirim:', sender);
         console.log('Isi Pesan:', messageBody);
-
-        const isSaved = savedContacts.has(sender);
-        console.log(`[DIAGNOSA] Status kontak ${sender}: ${isSaved ? 'TERSİMPAN' : 'TIDAK TERSİMPAN'}. Total kontak saat ini: ${savedContacts.size}`);
-
+        
         if (sender.endsWith('@g.us')) {
             console.log('Pesan dari grup, diabaikan.');
             return;
         }
+
+        // [PERUBAHAN UTAMA] Pengecekan kontak langsung saat pesan masuk
+        // onWhatsApp akan memeriksa apakah sebuah nomor terdaftar di WhatsApp.
+        // Jika nomor itu ada di kontak Anda, hasilnya akan berisi detail kontak.
+        // Jika tidak ada di kontak (nomor baru), hasilnya hanya berisi ID.
+        const [result] = await sock.onWhatsApp(sender);
+        const isSaved = !!result?.exists && !!msg.pushName; // Kontak dianggap tersimpan jika ada di WA dan punya nama (pushName)
+
+        console.log(`[DIAGNOSA] Status kontak ${sender}: ${isSaved ? 'TERSİMPAN' : 'TIDAK TERSİMPAN'}`);
 
         if (sender !== TEST_NUMBER && isSaved) {
             console.log('Pesan dari kontak tersimpan, diabaikan.');
