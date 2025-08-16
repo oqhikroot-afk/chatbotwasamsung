@@ -1,4 +1,5 @@
 // --- BAGIAN KODE WEB SERVER EXPRESS ---
+// Untuk menjaga server tetap aktif dan menampilkan status
 const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
@@ -32,7 +33,7 @@ const roomAvailability = {
     AC: 0
 };
 let savedContacts = new Set();
-let isContactsReady = false; // [PERUBAHAN] Bendera penanda kontak sudah dimuat
+let isContactsReady = false; // Flag untuk menandai kontak sudah dimuat
 
 // --- FUNGSI UTAMA BOT ---
 async function connectToWhatsApp() {
@@ -48,6 +49,7 @@ async function connectToWhatsApp() {
         logger: pino({ level: 'silent' }),
     });
 
+    // Listener untuk koneksi, QR code, dan auto-reconnect
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
@@ -55,19 +57,34 @@ async function connectToWhatsApp() {
             qrcode.generate(qr, { small: true });
         }
         if (connection === 'close') {
-            isContactsReady = false; // [PERUBAHAN] Reset flag saat koneksi putus
-            const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+            isContactsReady = false; // Reset flag saat koneksi putus
+            const lastDisconnectError = lastDisconnect.error;
+            const shouldReconnect = (lastDisconnectError instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+
             console.log('Koneksi terputus:', lastDisconnect.error, '| Mencoba menghubungkan kembali:', shouldReconnect);
+
             if (shouldReconnect) {
+                console.log("Melakukan restart koneksi...");
                 connectToWhatsApp();
             }
+
         } else if (connection === 'open') {
             console.log('Bot WhatsApp berhasil terhubung!');
+
+            // Timeout untuk memaksa status kontak menjadi siap jika tidak ada event
+            setTimeout(() => {
+                if (!isContactsReady) {
+                    console.log("Batas waktu tercapai, menganggap kontak sudah siap untuk melanjutkan...");
+                    isContactsReady = true;
+                }
+            }, 20000); // 20 detik
         }
     });
 
+    // Listener untuk menyimpan sesi
     sock.ev.on('creds.update', saveCreds);
 
+    // Listener untuk memuat daftar kontak
     sock.ev.on('contacts.set', ({ contacts }) => {
         console.log('Memuat daftar kontak dari WhatsApp...');
         savedContacts.clear(); 
@@ -77,16 +94,17 @@ async function connectToWhatsApp() {
             }
         });
         console.log(`Berhasil memuat ${savedContacts.size} kontak.`);
-        isContactsReady = true; // [PERUBAHAN] Set flag menjadi true setelah kontak dimuat
+        isContactsReady = true; // Set flag menjadi true setelah kontak dimuat
     });
 
+    // Listener untuk pesan masuk
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) {
             return;
         }
 
-        // [PERUBAHAN] Bot akan mengabaikan semua pesan jika kontak belum siap dimuat
+        // Bot akan mengabaikan semua pesan jika kontak belum siap dimuat
         if (!isContactsReady) {
             console.log("Menunggu daftar kontak selesai dimuat, pesan diabaikan untuk sementara...");
             return;
@@ -98,7 +116,7 @@ async function connectToWhatsApp() {
         console.log('\n--- PESAN MASUK ---');
         console.log('Pengirim:', sender);
         console.log('Isi Pesan:', messageBody);
-        
+
         const isSaved = savedContacts.has(sender);
         console.log(`[DIAGNOSA] Status kontak ${sender}: ${isSaved ? 'TERSİMPAN' : 'TIDAK TERSİMPAN'}. Total kontak saat ini: ${savedContacts.size}`);
 
@@ -115,22 +133,22 @@ async function connectToWhatsApp() {
         console.log('Bot akan memproses pesan ini...');
         const body = messageBody.toLowerCase();
 
-        // --- Logika balasan bot Anda (tetap sama) ---
+        // --- Logika balasan bot Anda ---
         if (body.includes('ketersediaan') || body.includes('kosong')) {
-             if (roomAvailability.nonAC === 0 && roomAvailability.AC === 0) {
-                 await sock.sendMessage(sender, { text: 'Mohon maaf, saat ini semua kamar sudah terisi penuh. Kami akan segera menghubungi admin untuk Anda. Mohon tunggu sebentar ya.' });
-                 const notifikasiAdmin = `*NOTIFIKASI CHAT DARI BOT*\n\nAda pengguna (${sender}) yang menanyakan ketersediaan kamar, dan saat ini semua kamar sudah penuh. Silakan tindak lanjuti jika diperlukan.`;
-                 await sock.sendMessage(ADMIN_ID, { text: notifikasiAdmin });
-             } else {
-                 let response = 'Saat ini, ketersediaan kamar kami:\n';
-                 if (roomAvailability.nonAC > 0) {
-                     response += `- Kamar non-AC: ${roomAvailability.nonAC} unit kosong.\n`;
-                 }
-                 if (roomAvailability.AC > 0) {
-                     response += `- Kamar AC: ${roomAvailability.AC} unit kosong.\n`;
-                 }
-                 await sock.sendMessage(sender, { text: response });
-             }
+            if (roomAvailability.nonAC === 0 && roomAvailability.AC === 0) {
+                await sock.sendMessage(sender, { text: 'Mohon maaf, saat ini semua kamar sudah terisi penuh. Kami akan segera menghubungi admin untuk Anda. Mohon tunggu sebentar ya.' });
+                const notifikasiAdmin = `*NOTIFIKASI CHAT DARI BOT*\n\nAda pengguna (${sender}) yang menanyakan ketersediaan kamar, dan saat ini semua kamar sudah penuh. Silakan tindak lanjuti jika diperlukan.`;
+                await sock.sendMessage(ADMIN_ID, { text: notifikasiAdmin });
+            } else {
+                let response = 'Saat ini, ketersediaan kamar kami:\n';
+                if (roomAvailability.nonAC > 0) {
+                    response += `- Kamar non-AC: ${roomAvailability.nonAC} unit kosong.\n`;
+                }
+                if (roomAvailability.AC > 0) {
+                    response += `- Kamar AC: ${roomAvailability.AC} unit kosong.\n`;
+                }
+                await sock.sendMessage(sender, { text: response });
+            }
         } else if (body.includes('selamat')) {
             await sock.sendMessage(sender, { text: 'Terima kasih, selamat datang di kos Griya Ida! Apakah Anda ingin tahu tentang fasilitas, harga, atau lokasi/alamat? Ketik salah satu untuk informasi lebih lanjut.'});
         } else if (body.includes('kos') || body.includes('kost') || body.includes('griya ida')) {
